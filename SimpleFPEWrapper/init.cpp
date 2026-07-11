@@ -12,6 +12,26 @@
 SFPEW::External::EGLFunctionsTable g_eglFuncs;
 SFPEW::External::BackendGLFunctionsTable g_glFuncs;
 
+#ifdef __EMSCRIPTEN__
+// Emscripten has no libEGL.so to dlopen. The host (MobileGL's emscripten-glfw adapter) calls
+// this once a GL context is current, passing MobileGL's proc-address as the downstream resolver
+// (it resolves both gl* and egl*). SFPEW only uses g_eglFuncs.eglGetProcAddress (the lookup.cpp
+// fallback) plus the g_glFuncs table for its fixed-function draws.
+extern "C" __attribute__((visibility("default")))
+void sfpew_emscripten_init(__eglMustCastToProperFunctionPointerType (*downstreamProc)(const char*)) {
+    static bool initialized = false;
+    if (initialized || downstreamProc == nullptr) {
+        return;
+    }
+    g_eglFuncs.eglGetProcAddress = downstreamProc;
+    if (!SFPEW::Utils::BackendLoader::AcquireBackendGLFunctions(g_glFuncs, downstreamProc) ||
+        g_glFuncs.glGetString == nullptr) {
+        return;
+    }
+    init_fpe();
+    initialized = true;
+}
+#else
 void Init() {
     std::string eglLibName;
     const char* envEglLib = std::getenv("SFPEW_EGL");
@@ -39,3 +59,4 @@ struct InitClass {
 };
 
 static InitClass staticInitObject;
+#endif // __EMSCRIPTEN__

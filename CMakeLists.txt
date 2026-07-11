@@ -19,7 +19,14 @@ else()
         set(CMAKE_ANDROID_STL_TYPE c++_static)
 endif()
 
-add_library(${CMAKE_PROJECT_NAME} SHARED
+set(SFPEW_LIBRARY_TYPE SHARED)
+if (EMSCRIPTEN)
+    # Emscripten: build a static archive to combine into libglfw3.a (its gl*/egl* symbols are
+    # renamed to sfpew_* by objcopy in the build so they don't collide with MobileGL's).
+    set(SFPEW_LIBRARY_TYPE STATIC)
+endif()
+
+add_library(${CMAKE_PROJECT_NAME} ${SFPEW_LIBRARY_TYPE}
         SimpleFPEWrapper/init.cpp
         SimpleFPEWrapper/drawing.cpp
         SimpleFPEWrapper/getter.cpp
