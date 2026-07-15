@@ -46,3 +46,19 @@ target_include_directories(${CMAKE_PROJECT_NAME} PUBLIC ${CMAKE_SOURCE_DIR}/incl
         ${CMAKE_SOURCE_DIR}/3rdparty/xxhash
 )
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE )
+
+option(SFPEW_BUILD_TESTS "Build SimpleFPEWrapper regression tests" OFF)
+if(SFPEW_BUILD_TESTS)
+        enable_testing()
+        add_executable(shadergen_test
+                tests/shadergen_test.cpp
+                SimpleFPEWrapper/fpe/fpe_shadergen.cpp
+        )
+        target_include_directories(shadergen_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/SimpleFPEWrapper
+                ${CMAKE_SOURCE_DIR}/include
+                ${CMAKE_SOURCE_DIR}/3rdparty/glm
+                ${CMAKE_SOURCE_DIR}/3rdparty/xxhash
+        )
+        add_test(NAME shadergen_test COMMAND shadergen_test)
+endif()

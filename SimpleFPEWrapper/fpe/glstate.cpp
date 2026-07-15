@@ -9,6 +9,7 @@
 #include "types.h"
 #include "transformation.h"
 #include "../init.h"
+#include <format>
 
 #define DEBUG 0
 
@@ -40,7 +41,20 @@ void glstate_t::send_uniforms(int program) {
     //    glm::value_ptr(fpe_uniform.transformation.matrices[matrix_idx(GL_PROJECTION)]));
     g_glFuncs.glUniformMatrix4fv(mat_id, 1, GL_FALSE, glm::value_ptr(mat));
 
-    g_glFuncs.glUniform1i(g_glFuncs.glGetUniformLocation(program, "Sampler0"), 0);
+    for (int i = 0; i < MAX_TEX; ++i) {
+        if (!fpe_state.fpe_bools.texture_2d_enable[i]) continue;
+
+        const auto sampler_name = std::format("Sampler{}", i);
+        const GLint sampler_id = g_glFuncs.glGetUniformLocation(program, sampler_name.c_str());
+        if (sampler_id >= 0) g_glFuncs.glUniform1i(sampler_id, i);
+
+        const auto matrix_name = std::format("TextureMat{}", i);
+        const GLint texture_mat_id = g_glFuncs.glGetUniformLocation(program, matrix_name.c_str());
+        if (texture_mat_id >= 0) {
+            g_glFuncs.glUniformMatrix4fv(texture_mat_id, 1, GL_FALSE,
+                                         glm::value_ptr(fpe_uniform.transformation.texture_matrices[i]));
+        }
+    }
 
     if (fpe_state.fpe_bools.fog_enable) {
         GLint fogcolor_id = g_glFuncs.glGetUniformLocation(program, "fogParam.color");
@@ -65,6 +79,29 @@ void glstate_t::send_uniforms(int program) {
         GLint alpharef_id = g_glFuncs.glGetUniformLocation(program, "alpharef");
 
         g_glFuncs.glUniform1f(alpharef_id, fpe_uniform.alpha_ref);
+    }
+
+    // Fixed-function lighting: scene ambient + per-enabled-light direction/diffuse. Positions
+    // are stored as set (MC uses an identity modelview, so they're already eye-space directions
+    // with w=0). Locations resolve to -1 (no-op) when the shader didn't emit lighting.
+    if (fpe_state.fpe_bools.lighting_enable) {
+        GLint ambient_id = g_glFuncs.glGetUniformLocation(program, "LightModelAmbient");
+        if (ambient_id >= 0)
+            g_glFuncs.glUniform4fv(ambient_id, 1, glm::value_ptr(fpe_uniform.light_model_ambient));
+
+        for (int i = 0; i < MAX_LIGHTS; ++i) {
+            if (!fpe_state.fpe_bools.light_enable[i]) continue;
+
+            const auto pos_name = std::format("LightPosition{}", i);
+            const GLint pos_id = g_glFuncs.glGetUniformLocation(program, pos_name.c_str());
+            if (pos_id >= 0)
+                g_glFuncs.glUniform4fv(pos_id, 1, glm::value_ptr(fpe_uniform.lights[i].position));
+
+            const auto diff_name = std::format("LightDiffuse{}", i);
+            const GLint diff_id = g_glFuncs.glGetUniformLocation(program, diff_name.c_str());
+            if (diff_id >= 0)
+                g_glFuncs.glUniform4fv(diff_id, 1, glm::value_ptr(fpe_uniform.lights[i].diffuse));
+        }
     }
 }
 
@@ -125,7 +162,12 @@ uint64_t glstate_t::vertex_attrib_hash(bool reset) {
                 hash.add(&attr.type, sizeof(attr.type));
                 hash.add(&attr.normalized, sizeof(attr.normalized));
                 //                hash.add(&attr.stride, sizeof(attr.stride));
-                hash.add(&attr.pointer, sizeof(attr.pointer));
+                // NOTE: do NOT hash attr.pointer. It's the client-array/VBO data address,
+                // which MC's BufferBuilder changes every draw — it has no effect on the
+                // generated shader (which depends only on the enabled attribute layout +
+                // types + FFP state). Hashing it made the program cache miss on every draw,
+                // regenerating a shader/program per draw and growing fpe_programs unboundedly
+                // (the ~4GB leak).
             } else {
                 const GLenum t = GL_FLOAT;
                 hash.add(&t, sizeof(t));

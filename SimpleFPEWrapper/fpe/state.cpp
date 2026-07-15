@@ -19,7 +19,8 @@
 #pragma clang optimize off
 #endif
 
-bool hijack_fpe_states(GLenum cap, bool enable, fixed_function_bool_t* bools) {
+bool hijack_fpe_states(GLenum cap, bool enable, fixed_function_state_t* state) {
+    auto* bools = &state->fpe_bools;
     switch (cap) {
     case GL_FOG:
         bools->fog_enable = enable;
@@ -30,8 +31,6 @@ bool hijack_fpe_states(GLenum cap, bool enable, fixed_function_bool_t* bools) {
     case GL_ALPHA_TEST:
         bools->alpha_test_enable = enable;
         return true;
-    // TODO: implement these states
-    case GL_COLOR_MATERIAL:
     case GL_LIGHT0:
     case GL_LIGHT1:
     case GL_LIGHT2:
@@ -39,10 +38,24 @@ bool hijack_fpe_states(GLenum cap, bool enable, fixed_function_bool_t* bools) {
     case GL_LIGHT4:
     case GL_LIGHT5:
     case GL_LIGHT6:
-    case GL_LIGHT7:
-    case GL_TEXTURE_2D:
+    case GL_LIGHT7: {
+        const int idx = static_cast<int>(cap - GL_LIGHT0);
+        if (idx >= 0 && idx < MAX_LIGHTS) bools->light_enable[idx] = enable;
+        return true;
+    }
+    // COLOR_MATERIAL is assumed AMBIENT_AND_DIFFUSE (what MC sets); the shadergen already
+    // uses the vertex colour as the material. RESCALE_NORMAL only affects normal
+    // magnitude, which we normalize in the shader anyway.
+    case GL_COLOR_MATERIAL:
     case GL_RESCALE_NORMAL:
         return true;
+    case GL_TEXTURE_2D: {
+        const GLint unit = static_cast<GLint>(state->active_texture - GL_TEXTURE0);
+        if (unit >= 0 && unit < MAX_TEX) {
+            bools->texture_2d_enable[unit] = enable;
+        }
+        return true;
+    }
     default:
         break;
     }
@@ -55,7 +68,7 @@ void glEnable(GLenum cap) {
 
     LIST_RECORD(glEnable, {}, cap)
 
-    if (hijack_fpe_states(cap, true, &g_glstate.fpe_state.fpe_bools)) return;
+    if (hijack_fpe_states(cap, true, &g_glstate.fpe_state)) return;
 
     g_glFuncs.glEnable(cap);
 }
@@ -66,9 +79,18 @@ void glDisable(GLenum cap) {
 
     LIST_RECORD(glDisable, {}, cap)
 
-    if (hijack_fpe_states(cap, false, &g_glstate.fpe_state.fpe_bools)) return;
+    if (hijack_fpe_states(cap, false, &g_glstate.fpe_state)) return;
 
     g_glFuncs.glDisable(cap);
+}
+
+void glActiveTexture(GLenum texture) {
+    // Keep the fixed-function server state in step with the backend texture binding state.
+    // Invalid enums are still forwarded so the backend can report the GL error.
+    if (texture >= GL_TEXTURE0 && texture < GL_TEXTURE0 + MAX_TEX) {
+        g_glstate.fpe_state.active_texture = texture;
+    }
+    g_glFuncs.glActiveTexture(texture);
 }
 
 void glClientActiveTexture(GLenum texture) {
@@ -77,7 +99,9 @@ void glClientActiveTexture(GLenum texture) {
 
     // Todo: this function can be added to displayList when GL 1.3+ is disabled
 
-    g_glstate.fpe_state.client_active_texture = texture;
+    if (texture >= GL_TEXTURE0 && texture < GL_TEXTURE0 + MAX_TEX) {
+        g_glstate.fpe_state.client_active_texture = texture;
+    }
 }
 
 void glAlphaFunc(GLenum func, GLclampf ref) {
@@ -88,6 +112,20 @@ void glAlphaFunc(GLenum func, GLclampf ref) {
 
     g_glstate.fpe_state.alpha_func = func;
     g_glstate.fpe_uniform.alpha_ref = ref;
+}
+
+// Texture environment. The generated FS hardcodes GL_MODULATE (color *= texcolor), which is
+// what MC sets for every unit, so we don't need the parameter yet. Intercept it anyway so it
+// doesn't fall through to MobileGL's core-profile stub, which logs a warning on every call
+// (MC hammers glTexEnvi per draw -> tens of thousands of log lines). Recorded for display
+// lists like the other FFP state setters. Extend to track ENV_MODE if COMBINE/REPLACE/ADD
+// support is added to the shadergen later.
+void glTexEnvi(GLenum target, GLenum pname, GLint param) {
+    LIST_RECORD(glTexEnvi, {}, target, pname, param)
+}
+
+void glTexEnvf(GLenum target, GLenum pname, GLfloat param) {
+    LIST_RECORD(glTexEnvf, {}, target, pname, param)
 }
 
 void glFogf(GLenum pname, GLfloat param) {
@@ -116,6 +154,7 @@ void glFogf(GLenum pname, GLfloat param) {
 
     default:
         // LOG_D("ERROR: Invalid %s pname: %s", __func__, pname)
+        break;
     }
 }
 
@@ -144,6 +183,7 @@ void glFogi(GLenum pname, GLint param) {
         return;
     default:
         // LOG_D("ERROR: Invalid %s pname: %s", __func__, pname)
+        break;
     }
 }
 
@@ -173,6 +213,7 @@ void glFogfv(GLenum pname, const GLfloat* params) {
     }
     default:
         // LOG_D("ERROR: Invalid %s pname: %s", __func__, pname)
+        break;
     }
 }
 
@@ -204,6 +245,7 @@ void glFogiv(GLenum pname, const GLint* params) {
         break;
     default:
         // LOG_D("ERROR: Invalid %s pname: %s", __func__, pname)
+        break;
     }
 }
 
@@ -242,6 +284,7 @@ void glLightf(GLenum light, GLenum pname, GLfloat param) {
         break;
     default:
         // LOG_D("ERROR: Invalid %s pname: %s", __func__, pname)
+        break;
     }
 }
 
@@ -296,6 +339,7 @@ void glLightfv(GLenum light, GLenum pname, const GLfloat* params) {
     }
     default:
         // LOG_D("ERROR: Invalid %s pname: %s", __func__, pname);
+        break;
     }
 }
 
@@ -320,13 +364,16 @@ void glLightiv(GLenum light, GLenum pname, const GLint* params) {
     case GL_POSITION: {
         glm::vec4 vec = glm::make_vec4(params);
         SELF_CALL(glLightfv, light, pname, glm::value_ptr(vec))
+        break;
     }
     case GL_SPOT_DIRECTION: {
         glm::vec3 vec = glm::make_vec3(params);
         SELF_CALL(glLightfv, light, pname, glm::value_ptr(vec))
+        break;
     }
     default:
         // LOG_D("ERROR: Invalid %s pname: %s", __func__, pname)
+        break;
     }
 }
 
@@ -341,8 +388,10 @@ void glLightModelf(GLenum pname, GLfloat param) {
     case GL_LIGHT_MODEL_COLOR_CONTROL:
     case GL_LIGHT_MODEL_TWO_SIDE:
         SELF_CALL(glLightModeli, pname, (GLint)param)
+        break;
     default:
         // LOG_D("ERROR: Invalid %s pname: %s", __func__, pname)
+        break;
     }
 }
 
@@ -364,6 +413,7 @@ void glLightModeli(GLenum pname, GLint param) {
         break;
     default:
         // LOG_D("ERROR: Invalid %s pname: %s", __func__, pname)
+        break;
     }
 }
 
@@ -384,6 +434,7 @@ void glLightModelfv(GLenum pname, const GLfloat* params) {
         break;
     default:
         // LOG_D("ERROR: Invalid %s pname: %s", __func__, pname)
+        break;
     }
 }
 
@@ -406,5 +457,6 @@ void glLightModeliv(GLenum pname, const GLint* params) {
         break;
     default:
         // LOG_D("ERROR: Invalid %s pname: %s", __func__, pname)
+        break;
     }
 }

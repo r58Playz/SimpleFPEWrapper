@@ -53,6 +53,25 @@ std::vector<uint32_t> quad_to_triangle(int n) {
     return indices;
 }
 
+// GL_TRIANGLE_FAN -> triangle list. WebGPU has no triangle-fan topology (and MobileGL's
+// core->WebGPU backend maps an unknown mode to TriangleList), so a fan drawn directly comes
+// out mis-triangulated (e.g. a stray wedge in the sunrise/sunset sky fan). Emit the fan's
+// (0, i, i+1) triangles as indices instead. GL_POLYGON tessellates identically for convex
+// polygons, which is all fixed-function callers produce.
+std::vector<uint32_t> fan_to_triangle(int n) {
+    int num_tris = n >= 3 ? n - 2 : 0;
+
+    std::vector<uint32_t> indices(num_tris * 3, 0);
+
+    for (int i = 0; i < num_tris; i++) {
+        indices[i * 3 + 0] = 0;
+        indices[i * 3 + 1] = i + 1;
+        indices[i * 3 + 2] = i + 2;
+    }
+
+    return indices;
+}
+
 #if DEBUG || GLOBAL_DEBUG
 void log_vtx_attrib_data(const void* ptr, GLenum type, int size, int stride, int offset, int idx) {
     const char* p = (const char*)ptr + idx * stride + offset;
@@ -176,9 +195,16 @@ int commit_fpe_state_on_draw(GLenum* mode, GLint* first, GLsizei* count) {
         // LOG_D("Using already bound VB")
     }
 
+    // Primitives WebGPU can't draw directly: rewrite to an indexed triangle list.
+    // GL_QUADS was removed from core GL; GL_TRIANGLE_FAN/GL_POLYGON are valid core but
+    // have no WebGPU topology, so MobileGL would mis-draw them as a plain TriangleList.
     if (*mode == GL_QUADS) {
         g_glstate.fpe_state.fpe_ib = quad_to_triangle(*count);
-
+    } else if (*mode == GL_TRIANGLE_FAN || *mode == GL_POLYGON) {
+        g_glstate.fpe_state.fpe_ib = fan_to_triangle(*count);
+    }
+    if (!g_glstate.fpe_state.fpe_ib.empty() &&
+        (*mode == GL_QUADS || *mode == GL_TRIANGLE_FAN || *mode == GL_POLYGON)) {
         // LOG_D("glBufferData: size = %d, data = 0x%x -> GL_ELEMENT_ARRAY_BUFFER (%d)",
         //      g_glstate.fpe_state.fpe_ib.size() * sizeof(uint32_t), g_glstate.fpe_state.fpe_ib.data(),
         //      g_glstate.fpe_state.fpe_ibo)

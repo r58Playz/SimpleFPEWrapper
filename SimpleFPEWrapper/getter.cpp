@@ -109,6 +109,13 @@ void glGetFloatv(GLenum pname, GLfloat* params) {
         memcpy(params, ptr, sizeof(GLfloat) * 16);
         break;
     }
+    case GL_TEXTURE_MATRIX: {
+        const GLint unit = static_cast<GLint>(g_glstate.fpe_state.active_texture - GL_TEXTURE0);
+        const GLint safeUnit = unit >= 0 && unit < MAX_TEX ? unit : 0;
+        auto* ptr = glm::value_ptr(g_glstate.fpe_uniform.transformation.texture_matrices[safeUnit]);
+        memcpy(params, ptr, sizeof(GLfloat) * 16);
+        break;
+    }
     default:
         g_glFuncs.glGetFloatv(pname, params);
         break;

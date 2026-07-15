@@ -23,8 +23,12 @@
 GLsizei type_size(GLenum type);
 
 struct transformation_t {
+    transformation_t();
+
     glm::mat4 matrices[4];
     std::vector<glm::mat4> matrices_stack[4];
+    glm::mat4 texture_matrices[MAX_TEX];
+    std::vector<glm::mat4> texture_matrices_stack[MAX_TEX];
     GLenum matrix_mode = GL_MODELVIEW;
 };
 
@@ -66,6 +70,7 @@ struct fixed_function_bool_t {      // glEnable/glDisable
     bool lighting_enable = false;   // GL_LIGHTING
     bool alpha_test_enable = false; // GL_ALPHA_TEST
     bool light_enable[MAX_LIGHTS] = {false};
+    bool texture_2d_enable[MAX_TEX] = {false};
 };
 
 struct light_t {
@@ -126,6 +131,7 @@ struct fixed_function_draw_state_t {
 };
 
 struct fixed_function_state_t {
+    GLenum active_texture = GL_TEXTURE0;             // glActiveTexture, selects server texture state
     GLenum client_active_texture = GL_TEXTURE0;      // glClientActiveTexture, specifies active texcood
     GLenum alpha_func = GL_ALWAYS;                   // glAlphaFunc
     GLenum fog_mode = GL_EXP;                        // glFogi(GL_FOG_MODE)

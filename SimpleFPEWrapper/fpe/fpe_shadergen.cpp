@@ -1101,10 +1101,13 @@ const char* glEnumToString(GLenum e) {
     }
 }
 
-constexpr std::string_view mg_shader_header = "#version 300 es\n"
-                                              "// MobileGlues FPE Shader\n"
-                                              "precision highp float;\n"
-                                              "precision highp int;\n";
+// Desktop core, NOT "#version 300 es". This SFPEW fork targets MobileGL (GL 3.3 core ->
+// WebGPU), whose ShaderSourceProcessor::ModernizeLegacyGLSL strips the highp/mediump/lowp
+// qualifiers for desktop core. That turns an ES "precision highp float;" into the invalid
+// "precision  float;" (glslang: "unexpected FLOAT, expecting HIGH_PRECISION"). Desktop core
+// needs no default-precision declarations, so emit core GLSL and drop them entirely.
+constexpr std::string_view mg_shader_header = "#version 330 core\n"
+                                              "// MobileGlues FPE Shader\n";
 constexpr std::string_view mg_vs_header = "// ** Vertex Shader **\n";
 constexpr std::string_view mg_fs_header = "// ** Fragment Shader **\n";
 constexpr std::string_view mg_fog_linear_func = "float fog_linear(float distance, float start, float end) {\n"
@@ -1288,19 +1291,28 @@ void add_vs_inout(const fixed_function_state_t& state, scratch_t& scratch, std::
                 //         glEnumToString(vp.type), glEnumToString(vp.usage), state.fpe_draw.current_data.sizes.data[i])
             }
 
-            std::string in_name = enabled ? vp2in_name(vp.usage, i) : vp2in_name(idx2vp(i), i);
+            const GLenum usage = enabled ? vp.usage : idx2vp(i);
+            std::string in_name = vp2in_name(usage, i);
             std::string type = enabled ? type2str(vp.type, vp.size) : type2str(GL_FLOAT, 4);
 
             vs += std::format("layout (location = {}) in {} {};\n", vpa.cidx(i), type, in_name);
 
-            if (vp.usage == GL_VERTEX_ARRAY) { // GL_VERTEX_ARRAY will be written into gl_Position
+            if (usage == GL_VERTEX_ARRAY) { // GL_VERTEX_ARRAY will be written into gl_Position
                 continue;
             }
 
-            std::string out_name = enabled ? vp2out_name(vp.usage, i) : vp2out_name(idx2vp(i), i);
+            const int texid = usage - GL_TEXTURE_COORD_ARRAY;
+            const bool is_texcoord = 0 <= texid && texid < MAX_TEX;
+            if (is_texcoord && !state.fpe_bools.texture_2d_enable[texid]) {
+                continue;
+            }
+
+            std::string out_name = vp2out_name(usage, i);
             std::string linkage;
 
-            linkage += type;
+            // sampler2D consumes two coordinates. Normalize all legal legacy texture
+            // coordinate widths to vec2 after applying that unit's texture matrix.
+            linkage += is_texcoord ? "vec2" : type;
             linkage += ' ';
             linkage += out_name;
             linkage += ";\n";
@@ -1311,15 +1323,27 @@ void add_vs_inout(const fixed_function_state_t& state, scratch_t& scratch, std::
             scratch.last_stage_linkage += "in " + linkage;
 
             // TODO: if not this simple? Fog / Vertex light?
-            scratch.vs_body += out_name;
-            scratch.vs_body += " = ";
-            scratch.vs_body += in_name;
-            scratch.vs_body += ";\n";
+            if (is_texcoord) {
+                const GLint size = enabled ? vp.size : 4;
+                std::string homogeneous;
+                switch (size) {
+                case 1: homogeneous = std::format("vec4({}, 0.0, 0.0, 1.0)", in_name); break;
+                case 2: homogeneous = std::format("vec4({}, 0.0, 1.0)", in_name); break;
+                case 3: homogeneous = std::format("vec4({}, 1.0)", in_name); break;
+                default: homogeneous = in_name; break;
+                }
+                scratch.vs_body += std::format("{} = (TextureMat{} * {}).xy;\n", out_name, texid, homogeneous);
+            } else {
+                scratch.vs_body += out_name;
+                scratch.vs_body += " = ";
+                scratch.vs_body += in_name;
+                scratch.vs_body += ";\n";
+            }
 
-            if (vp.usage == GL_COLOR_ARRAY) scratch.has_vertex_color = true;
+            if (usage == GL_COLOR_ARRAY) scratch.has_vertex_color = true;
+            if (usage == GL_NORMAL_ARRAY) scratch.has_normal = true;
 
-            int texid = vp.usage - GL_TEXTURE_COORD_ARRAY;
-            if (0 <= texid && texid < MAX_TEX) {
+            if (is_texcoord) {
                 // LOG_D("has_texcoord[%d] = true", texid)
                 scratch.has_texcoord[texid] = true;
             }
@@ -1331,11 +1355,34 @@ void add_vs_inout(const fixed_function_state_t& state, scratch_t& scratch, std::
     }
 }
 
+// Fixed-function lighting is only emitted when it's enabled AND the draw supplies both a
+// normal (to shade with) and a vertex colour (the material, via GL_COLOR_MATERIAL). MC's
+// item/entity draws satisfy all three; terrain/GUI disable lighting so they're unaffected.
+static bool lighting_active(const fixed_function_state_t& state, const scratch_t& scratch) {
+    return state.fpe_bools.lighting_enable && scratch.has_normal && scratch.has_vertex_color;
+}
+
 void add_vs_uniforms(const fixed_function_state_t& state, scratch_t& scratch, std::string& vs) {
     // Transformation matrix
     vs += "uniform mat4 ModelViewProjMat;\n";
-    if (state.fpe_bools.fog_enable) {
+    const bool lighting = lighting_active(state, scratch);
+    if (state.fpe_bools.fog_enable || lighting) {
         vs += "uniform mat4 ModelViewMat;\n";
+    }
+    for (int i = 0; i < MAX_TEX; ++i) {
+        if (scratch.has_texcoord[i]) {
+            vs += std::format("uniform mat4 TextureMat{};\n", i);
+        }
+    }
+    if (lighting) {
+        vs += "uniform vec4 LightModelAmbient;\n";
+        for (int i = 0; i < MAX_LIGHTS; ++i) {
+            if (state.fpe_bools.light_enable[i]) {
+                vs += std::format("uniform vec4 LightPosition{0};\n"
+                                  "uniform vec4 LightDiffuse{0};\n",
+                                  i);
+            }
+        }
     }
 }
 
@@ -1348,15 +1395,28 @@ void add_vs_body(const fixed_function_state_t& state, scratch_t& scratch, std::s
               "    vViewPosition = viewPosition.xyz;\n";
     }
     vs += scratch.vs_body;
+
+    // Fixed-function per-vertex diffuse lighting (Gouraud). Runs after vs_body has set
+    // vertexColor = Color. Material comes from the vertex colour (GL_COLOR_MATERIAL,
+    // GL_AMBIENT_AND_DIFFUSE). Light positions are directional (w = 0) and already in eye
+    // space (MC sets them under an identity modelview), so transform the normal to eye space
+    // with the modelview and accumulate: factor = ambient + Σ diffuse·max(N·L, 0).
+    if (lighting_active(state, scratch)) {
+        vs += "    vec3 fpeN = normalize(mat3(ModelViewMat) * Normal);\n"
+              "    vec3 fpeLight = LightModelAmbient.rgb;\n";
+        for (int i = 0; i < MAX_LIGHTS; ++i) {
+            if (state.fpe_bools.light_enable[i]) {
+                vs += std::format(
+                    "    fpeLight += LightDiffuse{0}.rgb * max(dot(fpeN, normalize(LightPosition{0}.xyz)), 0.0);\n",
+                    i);
+            }
+        }
+        vs += "    vertexColor = vec4(clamp(vertexColor.rgb * fpeLight, 0.0, 1.0), vertexColor.a);\n";
+    }
     vs += "}\n";
 }
 
 void add_fs_uniforms(const fixed_function_state_t& state, scratch_t& scratch, std::string& fs) {
-    // Hardcode a sampler here...
-    // TODO: Fix this on multitexture
-    //    if (scratch.has_texcoord)
-    //        fs += std::format(
-    //                "uniform sampler2D Sampler{};\n", 0);
     for (int i = 0; i < MAX_TEX; ++i) {
         if (scratch.has_texcoord[i]) {
             fs += std::format("uniform sampler2D Sampler{};\n", i);
@@ -1415,7 +1475,6 @@ void add_fs_body(const fixed_function_state_t& state, scratch_t& scratch, std::s
     //    }
 
     for (int i = 0; i < MAX_TEX; ++i) {
-        if (i > 0) break;
         if (scratch.has_texcoord[i]) {
             fs += std::format("\n"
                               "    // Texturing #{0}\n"
