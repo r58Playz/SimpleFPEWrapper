@@ -77,11 +77,19 @@ void glGetIntegerv(GLenum pname, GLint* params) {
     }
 
     switch (pname) {
+    // Report a core / forward-compatible profile, NOT compatibility. SFPEW only exposes a subset of
+    // the fixed-function surface via the proc-address (immediate-mode draw calls, ~91 entry points),
+    // not the full GL11/13/14 deprecated set. If we claim a compatibility profile, LWJGL's
+    // GL.createCapabilities evaluates `(fc || checkFunctions(DEPRECATED)) && checkFunctions(CORE)`
+    // with fc=false; the DEPRECATED check fails on the missing FF functions and the `&&`
+    // short-circuits, so the CORE check (glGetString/glGetError/...) never runs and those core
+    // functions are left as functionMissingAbort -> crash on first use. Advertising core sets
+    // LWJGL's forwardCompatible=true so it skips FF resolution and loads the core surface.
     case GL_CONTEXT_PROFILE_MASK:
-        *params = GL_CONTEXT_COMPATIBILITY_PROFILE_BIT;
+        *params = GL_CONTEXT_CORE_PROFILE_BIT;
         break;
     case GL_CONTEXT_FLAGS:
-        *params = 0;
+        *params = GL_CONTEXT_FLAG_FORWARD_COMPATIBLE_BIT;
         break;
     case GL_NUM_EXTENSIONS:
         static GLint cachedNumExtensions = -1;
