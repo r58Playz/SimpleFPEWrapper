@@ -8,12 +8,22 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# -fPIC. Turn OFF when static-linking SimpleFPEWrapper into a non-PIC (non-MAIN_MODULE) Emscripten
+# binary: under -fPIC the default-visibility exported gl*/egl* symbols' addresses become GOT.func
+# entries that resolve to null in such a link, so proc-address lookups hand back null pointers.
+option(SFPEW_POSITION_INDEPENDENT_CODE "Build SimpleFPEWrapper with -fPIC" ON)
+if(SFPEW_POSITION_INDEPENDENT_CODE)
+        set(SFPEW_PIC_FLAG "-fPIC")
+else()
+        set(SFPEW_PIC_FLAG "")
+endif()
+
 if(MACOS)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w -fvisibility=default -funwind-tables -g -D_THREAD_SAFE -fPIC -stdlib=libc++")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w -fvisibility=default -funwind-tables -g -D_THREAD_SAFE ${SFPEW_PIC_FLAG} -stdlib=libc++")
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w -g -std=gnu99 -funwind-tables -O3 -fvisibility=hidden")
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++")
 else()
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w -fvisibility=hidden -funwind-tables -g -D_THREAD_SAFE -fPIC")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w -fvisibility=hidden -funwind-tables -g -D_THREAD_SAFE ${SFPEW_PIC_FLAG}")
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w -g -std=gnu99 -funwind-tables -O3 -fvisibility=hidden")
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libstdc++")
         set(CMAKE_ANDROID_STL_TYPE c++_static)
