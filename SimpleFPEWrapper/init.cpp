@@ -12,24 +12,32 @@
 SFPEW::External::EGLFunctionsTable g_eglFuncs;
 SFPEW::External::BackendGLFunctionsTable g_glFuncs;
 
-#ifdef __EMSCRIPTEN__
-// Emscripten has no libEGL.so to dlopen. The host (MobileGL's emscripten-glfw adapter) calls
-// this once a GL context is current, passing MobileGL's proc-address as the downstream resolver
-// (it resolves both gl* and egl*). SFPEW only uses g_eglFuncs.eglGetProcAddress (the lookup.cpp
-// fallback) plus the g_glFuncs table for its fixed-function draws.
-extern "C" __attribute__((visibility("default")))
-void sfpew_emscripten_init(__eglMustCastToProperFunctionPointerType (*downstreamProc)(const char*)) {
+#pragma GCC visibility push(default)
+SFPEW_APIENTRY int sfpew_init_with_proc(
+    __eglMustCastToProperFunctionPointerType (*downstreamProc)(const char*)) {
     static bool initialized = false;
-    if (initialized || downstreamProc == nullptr) {
-        return;
+    if (initialized) {
+        return 1;
+    }
+    if (downstreamProc == nullptr) {
+        return 0;
     }
     g_eglFuncs.eglGetProcAddress = downstreamProc;
     if (!SFPEW::Utils::BackendLoader::AcquireBackendGLFunctions(g_glFuncs, downstreamProc) ||
         g_glFuncs.glGetString == nullptr) {
-        return;
+        return 0;
     }
     init_fpe();
     initialized = true;
+    return 1;
+}
+#pragma GCC visibility pop
+
+#ifdef __EMSCRIPTEN__
+// Backward-compatible entry point used by the wasm GLFW adapter.
+extern "C" __attribute__((visibility("default")))
+void sfpew_emscripten_init(__eglMustCastToProperFunctionPointerType (*downstreamProc)(const char*)) {
+    (void)sfpew_init_with_proc(downstreamProc);
 }
 #else
 void Init() {
@@ -46,16 +54,16 @@ void Init() {
         throw std::runtime_error("Failed to acquire EGL functions");
     }
 
-    if (!SFPEW::Utils::BackendLoader::AcquireBackendGLFunctions(g_glFuncs, g_eglFuncs.eglGetProcAddress) ||
-        g_glFuncs.glGetString == nullptr) {
+    if (!sfpew_init_with_proc(g_eglFuncs.eglGetProcAddress)) {
         throw std::runtime_error("Failed to acquire BackendGL functions");
-    } // FIXME: actually we should acquire gl functions after egl initialization
-
-    init_fpe();
+    }
 }
 
 struct InitClass {
-    InitClass() { Init(); }
+    InitClass() {
+        const char* deferred = std::getenv("SFPEW_DEFER_INIT");
+        if (!deferred || std::strcmp(deferred, "1") != 0) Init();
+    }
 };
 
 static InitClass staticInitObject;

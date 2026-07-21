@@ -16,6 +16,12 @@
 extern SFPEW::External::EGLFunctionsTable g_eglFuncs;
 extern SFPEW::External::BackendGLFunctionsTable g_glFuncs;
 
+// Explicit initialization is used by injected launchers and trace replay, where
+// SFPEW is loaded before a GL context exists. Returns 1 once initialized, 0 when
+// no current downstream GL context is available yet.
+SFPEW_APIENTRY int sfpew_init_with_proc(
+    __eglMustCastToProperFunctionPointerType (*downstreamProc)(const char*));
+
 SFPEW_APIENTRY const GLubyte* glGetString(GLenum name);
 SFPEW_APIENTRY const GLubyte* glGetStringi(GLenum name, GLuint index);
 SFPEW_APIENTRY void glGetIntegerv(GLenum pname, GLint* params);
